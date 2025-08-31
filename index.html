@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Code-to-Diagram Generator</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="assets/style.css" />
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="container">
+        <h1 class="text-balance">Code-to-Diagram Generator</h1>
+        <p class="subtitle">Paste or upload code (Java, PHP, Python) → Generate UML class diagram</p>
+      </div>
+    </header>
+
+    <main class="container">
+  <section class="card form-section">
+    <h2>🔎 Enter Your Code</h2>
+    <div class="form-grid">
+      <div class="field">
+        <label for="languageSelect">Language</label>
+        <select id="languageSelect" aria-label="Select language">
+          <option value="">Auto-detect</option>
+          <option value="java">Java</option>
+          <option value="php">PHP</option>
+          <option value="python">Python</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <label for="fileInput">Upload File</label>
+        <input id="fileInput" type="file" accept=".java,.php,.py,.txt" />
+        <small class="help-text">If provided, file content overrides pasted code.</small>
+      </div>
+
+      <div class="field field--full">
+        <label for="codeInput">Paste Code</label>
+        <textarea id="codeInput" rows="14" placeholder="// Paste your code here"></textarea>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button id="generateBtn" class="btn btn-primary" type="button">⚡ Generate Diagram</button>
+      <button id="exportSvgBtn" class="btn" type="button" disabled>⬇ Export SVG</button>
+      <button id="exportPngBtn" class="btn" type="button" disabled>⬇ Export PNG</button>
+    </div>
+
+    <p id="statusMsg" class="status" role="status" aria-live="polite"></p>
+  </section>
+
+  <section class="card diagram-section">
+    <h2>📊 Diagram Preview</h2>
+    <div class="diagram-area">
+      <div id="diagramContainer" class="diagram-container" aria-label="UML class diagram preview" role="img"></div>
+    </div>
+  </section>
+</main>
+
+    <footer class="app-footer">
+      <div class="container">
+        <p>Built with Mermaid.js. Backend: PHP parser. Export to SVG/PNG.</p>
+      </div>
+    </footer>
+
+    <script>
+      // Initialize Mermaid
+      mermaid.initialize({ startOnLoad: false, theme: "default", securityLevel: "loose" });
+
+      const generateBtn = document.getElementById("generateBtn");
+      const exportSvgBtn = document.getElementById("exportSvgBtn");
+      const exportPngBtn = document.getElementById("exportPngBtn");
+      const fileInput = document.getElementById("fileInput");
+      const codeInput = document.getElementById("codeInput");
+      const languageSelect = document.getElementById("languageSelect");
+      const diagramContainer = document.getElementById("diagramContainer");
+      const statusMsg = document.getElementById("statusMsg");
+
+      let currentSvg = "";
+      let currentMermaid = "";
+
+      function detectLanguageFromFilename(name) {
+        if (!name) return "";
+        const lower = name.toLowerCase();
+        if (lower.endsWith(".java")) return "java";
+        if (lower.endsWith(".php")) return "php";
+        if (lower.endsWith(".py")) return "python";
+        return "";
+      }
+
+      function visibilitySymbol(vis) {
+        switch ((vis || "").toLowerCase()) {
+          case "public": return "+";
+          case "private": return "-";
+          case "protected": return "#";
+          default: return "~";
+        }
+      }
+
+      function buildMermaidFromJson(data) {
+        // data: { classes:[], functions:[], relationships:[] }
+        const lines = ["classDiagram"];
+        const known = new Set();
+
+        (data.classes || []).forEach(cls => {
+          const name = cls.name;
+          known.add(name);
+
+          const isInterface = cls.isInterface === true;
+          if (isInterface) {
+            lines.push(`interface ${name}`);
+          }
+
+          lines.push(`class ${name} {`);
+          (cls.attributes || []).forEach(a => {
+            const sign = visibilitySymbol(a.visibility);
+            const type = a.type ? `: ${a.type}` : "";
+            lines.push(`  ${sign} ${a.name}${type}`);
+          });
+          (cls.methods || []).forEach(m => {
+            const sign = visibilitySymbol(m.visibility);
+            const params = m.params ? m.params : "";
+            const ret = m.returns ? `: ${m.returns}` : "";
+            lines.push(`  ${sign} ${m.name}(${params})${ret}`);
+          });
+          lines.push("}");
+
+          if (Array.isArray(cls.implements)) {
+            cls.implements.forEach(iface => {
+              if (iface && !known.has(iface)) {
+                lines.push(`interface ${iface}`);
+                known.add(iface);
+              }
+              if (iface) lines.push(`${name} ..|> ${iface}`);
+            });
+          }
+          if (cls.extends) {
+            const parent = cls.extends;
+            if (parent && !known.has(parent)) {
+              lines.push(`class ${parent}`);
+              known.add(parent);
+            }
+            if (parent) lines.push(`${name} --|> ${parent}`);
+          }
+        });
+
+        (data.relationships || []).forEach(r => {
+          const from = r.from;
+          const to = r.to;
+          const type = r.type;
+          if (!from || !to) return;
+          if (!known.has(from)) { lines.push(`class ${from}`); known.add(from); }
+          if (!known.has(to)) { lines.push(`class ${to}`); known.add(to); }
+          if (type === "extends") lines.push(`${from} --|> ${to}`);
+          else if (type === "implements") lines.push(`${from} ..|> ${to}`);
+          else lines.push(`${from}  ${to}`);
+        });
+
+        if ((data.functions || []).length > 0) {
+          lines.push("class GlobalFunctions {");
+          (data.functions || []).forEach(fn => {
+            const params = fn.params ? fn.params : "";
+            const ret = fn.returns ? `: ${fn.returns}` : "";
+            lines.push(`  + ${fn.name}(${params})${ret}`);
+          });
+          lines.push("}");
+        }
+
+        return lines.join("\n");
+      }
+
+      function setStatus(message, type = "info") {
+        statusMsg.textContent = message || "";
+        statusMsg.className = "status " + (type ? `status--${type}` : "");
+      }
+
+      async function parseAndRender(code, language, file) {
+        setStatus("Parsing code...", "info");
+        exportSvgBtn.disabled = true;
+        exportPngBtn.disabled = true;
+        diagramContainer.innerHTML = "";
+
+        try {
+          const form = new FormData();
+          if (code) form.append("code", code);
+          if (language) form.append("language", language);
+          if (file) form.append("file", file);
+
+          const res = await fetch("backend/parser.php", {
+            method: "POST",
+            body: form
+          });
+
+          if (!res.ok) {
+            throw new Error(`Backend responded with ${res.status}`);
+          }
+
+          const json = await res.json();
+
+          if (!json || !json.result) {
+            setStatus("Unexpected response from backend.", "error");
+            return;
+          }
+
+          if (
+            (!json.result.classes || json.result.classes.length === 0) &&
+            (!json.result.functions || json.result.functions.length === 0)
+          ) {
+            setStatus(json.message || "No classes or functions detected. Please check your input.", "warning");
+          } else {
+            setStatus(`Detected ${json.result.classes?.length || 0} class(es) and ${json.result.functions?.length || 0} function(s).`, "success");
+          }
+
+          const mermaidText = buildMermaidFromJson(json.result);
+          currentMermaid = mermaidText;
+
+          const id = "diagram-" + Date.now();
+          const { svg } = await mermaid.render(id, mermaidText);
+          currentSvg = svg;
+          diagramContainer.innerHTML = svg;
+
+          exportSvgBtn.disabled = !currentSvg;
+          exportPngBtn.disabled = !currentSvg;
+        } catch (err) {
+          console.error("[v0] Error:", err);
+          setStatus("Backend not reachable. Run this project on a PHP server to parse code.", "error");
+        }
+      }
+
+      function download(filename, blob) {
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        URL.revokeObjectURL(a.href);
+        a.remove();
+      }
+
+      exportSvgBtn.addEventListener("click", () => {
+        if (!currentSvg) return;
+        const blob = new Blob([currentSvg], { type: "image/svg+xml;charset=utf-8" });
+        download("diagram.svg", blob);
+      });
+
+      exportPngBtn.addEventListener("click", async () => {
+        if (!currentSvg) return;
+        const svgBlob = new Blob([currentSvg], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(svgBlob);
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+          const scale = 2;
+          const canvas = document.createElement("canvas");
+          canvas.width = img.width * scale;
+          canvas.height = img.height * scale;
+          const ctx = canvas.getContext("2d");
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          canvas.toBlob((blob) => {
+            if (blob) download("diagram.png", blob);
+            URL.revokeObjectURL(url);
+          }, "image/png");
+        };
+        img.onerror = () => {
+          URL.revokeObjectURL(url);
+          setStatus("Failed to export PNG.", "error");
+        };
+        img.src = url;
+      });
+
+      generateBtn.addEventListener("click", async () => {
+        const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+        const langFromSelect = languageSelect.value;
+        const langFromFile = detectLanguageFromFilename(file?.name || "");
+        const language = langFromSelect || langFromFile || "";
+
+        if (file) {
+          const text = await file.text();
+          await parseAndRender(text, language, file);
+          return;
+        }
+        const code = codeInput.value.trim();
+        if (!code) {
+          setStatus("Please upload a file or paste code first.", "warning");
+          return;
+        }
+        await parseAndRender(code, language, null);
+      });
+    </script>
+  </body>
+</html>
